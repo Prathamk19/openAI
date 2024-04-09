@@ -1,5 +1,5 @@
 This is a Sample Project exploring Spring AI API's. Currently Chatbox responses to the queries with the provided URL's and PDF's.
-In this application I explored Spring AI API's on DocumentReader, PDFReader, VectorStores, Tocken Splitter etc.
+In this application I am exploring Spring AI API's on DocumentReader, PDFReader, VectorStores, Tocken Splitter etc.
 
 Make sure you use your Open AI API key, update the environment variables appropriately.
 
