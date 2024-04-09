@@ -5,114 +5,96 @@ import com.openai.ai.model.QueryResponse;
 import com.openai.ai.model.WebPageQuery;
 import com.openai.ai.model.WebPageRequest;
 import com.openai.ai.service.WebPageReaderService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
+import org.springframework.ai.reader.ExtractedTextFormatter;
+import org.springframework.ai.reader.pdf.PagePdfDocumentReader;
+import org.springframework.ai.reader.pdf.config.PdfDocumentReaderConfig;
 import org.springframework.ai.transformer.splitter.TokenTextSplitter;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.Resource;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.text.BreakIterator;
+import java.io.IOException;
+import java.nio.file.DirectoryStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 @RestController
 public class WebPageController {
 
+    private static final Logger LOG = LoggerFactory.getLogger(WebPageController.class);
     @Autowired
     private WebPageReaderService webPageReaderService;
     @Autowired
     private WebPageChatbot chatbot;
-
     @Autowired
     private VectorStore vectorStore;
 
-    @PostMapping("/read")
+    @PostMapping("/urls")
     public String readWebPage(@RequestBody WebPageRequest request) {
         String url = request.getUrl();
-        saveToAIModel(url, webPageReaderService.readWebPage(url));
+        createAndStoreEmbeddings(url, webPageReaderService.readWebPage(url));
+        LOG.info("Completed URL operation.");
         return ResponseEntity.accepted().toString();
     }
 
-    private void saveToAIModel(String url, String content) {
+    @PostMapping("/pdfs")
+    public String readPdfs(@Value("${pdf.dir.path}") String pdfFilePath) {
+        readFilesAndStoreEmbeddings(pdfFilePath);
+        LOG.info("Completed PDF operation.");
+        return ResponseEntity.accepted().toString();
+    }
+
+    @GetMapping("/query")
+    public String queryToChatbot(@RequestBody WebPageQuery webPageQuery) {
+        String response = chatbot.chat(webPageQuery.getQuery());
+        QueryResponse queryResponse = new QueryResponse();
+        queryResponse.setAnswer(response);
+        LOG.info("Received : {}", Map.of("response", response));
+        return queryResponse.getAnswer();
+    }
+
+    private void createAndStoreEmbeddings(String url, String content) {
         List<Document> documentList = new ArrayList<>();
-        for (String chunks : splitIntoChunks(content, 400)) {
+        TokenTextSplitter textSplitter = new TokenTextSplitter();
+        // Default chunk size is defined to 800 in TokenTextSplitter
+        for (String chunks : textSplitter.split(content, 800)) {
             documentList.add(new Document(chunks));
         }
-        var textSplitter = new TokenTextSplitter();
-        textSplitter.split(content, 200);
+        vectorStore.add(List.of(new Document(url + " associated link for reference")));
         for (Document document : documentList) {
-//            try {
-//                Thread.sleep(200);
-//            } catch (InterruptedException e) {
-//                throw new RuntimeException(e);
-//            }
             vectorStore.add(List.of(document));
         }
     }
 
-    @GetMapping("/query")
-    public QueryResponse queryToChatbot(@RequestBody WebPageQuery webPageQuery) {
-        String response = chatbot.chat(webPageQuery.getQuery());
-        QueryResponse queryResponse = new QueryResponse();
-        queryResponse.setAnswer(response);
-        System.out.println(Map.of("response", response));
-        return queryResponse;
-    }
+    private void readFilesAndStoreEmbeddings(String pdfFilePath) {
+        try (DirectoryStream<Path> directoryStream = Files.newDirectoryStream(Paths.get(pdfFilePath), "*.pdf")) {
+            for (Path filePath : directoryStream) {
+                LOG.info("Reading file {}", filePath);
+                Resource pdfResource = new FileSystemResource(filePath);
+                PdfDocumentReaderConfig config = PdfDocumentReaderConfig.builder()
+                        .withPageExtractedTextFormatter(new ExtractedTextFormatter.Builder().withNumberOfBottomTextLinesToDelete(3)
+                                .build())
+                        .withPagesPerDocument(1)
+                        .build();
 
-    public List<String> splitIntoChunks(String text, int targetWordCount) {
-        List<String> chunks = new ArrayList<>();
-
-        // Create a BreakIterator to iterate over sentences
-        BreakIterator iterator = BreakIterator.getSentenceInstance(Locale.US);
-        iterator.setText(text);
-
-        int start = iterator.first();
-        int end = iterator.next();
-        int wordCount = 0;
-        StringBuilder chunk = new StringBuilder();
-
-        while (end != BreakIterator.DONE) {
-            String sentence = text.substring(start, end);
-            int sentenceWordCount = countWords(sentence);
-
-            // Check if adding the sentence to the chunk exceeds the target word count
-            if (wordCount + sentenceWordCount <= targetWordCount) {
-                // Add the sentence to the chunk
-                chunk.append(sentence);
-                wordCount += sentenceWordCount;
-
-                // Check if the sentence ends with a full stop
-                if (sentence.trim().endsWith(".")) {
-                    // If yes, add the chunk to the list and reset
-                    chunks.add(chunk.toString().trim());
-                    chunk.setLength(0);
-                    wordCount = 0;
-                } else {
-                    // If no full stop, add space to separate from next sentence
-                    chunk.append(" ");
-                }
-            } else {
-                // Add the current chunk to the list and reset
-                chunks.add(chunk.toString().trim());
-                chunk.setLength(0);
-                wordCount = 0;
+                PagePdfDocumentReader pdfReader = new PagePdfDocumentReader(pdfResource, config);
+                TokenTextSplitter textSplitter = new TokenTextSplitter();
+                var docs = textSplitter.apply(pdfReader.get());
+                vectorStore.accept(docs);
             }
-
-            start = end;
-            end = iterator.next();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
         }
-
-        // Add the last chunk if not empty
-        if (!chunk.isEmpty()) {
-            chunks.add(chunk.toString().trim());
-        }
-        return chunks;
-    }
-
-    private int countWords(String sentence) {
-        return sentence.split("\\s+").length;
     }
 }

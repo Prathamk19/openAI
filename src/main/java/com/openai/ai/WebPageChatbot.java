@@ -1,6 +1,8 @@
 package com.openai.ai;
 
 import org.springframework.ai.chat.ChatClient;
+import org.springframework.ai.chat.ChatResponse;
+import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.chat.prompt.SystemPromptTemplate;
@@ -15,14 +17,6 @@ import java.util.stream.Collectors;
 @Component
 public class WebPageChatbot {
 
-    private final String template = """
-                        
-            You're assisting with questions about web page services
-                        
-            DOCUMENTS:
-            {documents}
-            
-            """;
     private final ChatClient aiClient;
     private final VectorStore vectorStore;
 
@@ -32,16 +26,26 @@ public class WebPageChatbot {
     }
 
     public String chat(String message) {
-        var listOfSimilarDocuments = this.vectorStore.similaritySearch(message);
-        var documents = listOfSimilarDocuments
+        List<Document> listOfSimilarDocuments = this.vectorStore.similaritySearch(message);
+        String documents = listOfSimilarDocuments
                 .stream()
                 .map(Document::getContent)
                 .collect(Collectors.joining(System.lineSeparator()));
-        var systemMessage = new SystemPromptTemplate(this.template)
+        String template = """
+                            
+                You're assisting with questions about various web pages, text files and pdfs provided by the User and contents are stored in the database.
+                
+                If you are unsure, simply state that you don't know.
+                            
+                DOCUMENTS:
+                {documents}
+                            
+                """;
+        Message systemMessage = new SystemPromptTemplate(template)
                 .createMessage(Map.of("documents", documents));
-        var userMessage = new UserMessage(message);
-        var prompt = new Prompt(List.of(systemMessage, userMessage));
-        var aiResponse = aiClient.call(prompt);
+        UserMessage userMessage = new UserMessage(message);
+        Prompt prompt = new Prompt(List.of(systemMessage, userMessage));
+        ChatResponse aiResponse = aiClient.call(prompt);
         return aiResponse.getResult().getOutput().getContent();
     }
 }
